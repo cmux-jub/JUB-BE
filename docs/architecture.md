@@ -14,7 +14,7 @@
 | ORM | SQLAlchemy 2.0 + Alembic | async session, 마이그레이션 |
 | Auth | JWT (PyJWT) | access + refresh 토큰 |
 | Validation | Pydantic v2 | 요청/응답 스키마 |
-| AI | Anthropic Python SDK | Claude API 호출 |
+| AI | OpenAI HTTP API | OpenAI API 호출 |
 | Task Queue | Celery + Redis | 요약 생성 등 비동기 작업 |
 | Test | pytest + pytest-asyncio | 비동기 테스트 지원 |
 | Lint | Ruff | 린트 + 포맷팅 통합 |
@@ -77,7 +77,7 @@ JUP-BE/
 │       │   ├── chatbot_repo.py
 │       │   └── retrospective_repo.py
 │       └── ai/              # AI/LLM 통합
-│           ├── client.py    # Anthropic SDK 래퍼
+│           ├── client.py    # OpenAI API 래퍼
 │           ├── prompts.py   # 시스템 프롬프트 관리
 │           ├── classifier.py    # 거래 카테고리 분류
 │           ├── summarizer.py    # 대화 요약
@@ -101,7 +101,7 @@ JUP-BE/
 ```
 Request → API Router → Service → Repository → DB
                          ↓
-                      AI Module → Anthropic API
+                      AI Module → OpenAI API
 ```
 
 | 레이어 | 책임 | 규칙 |
@@ -139,16 +139,16 @@ class ApiResponse(BaseModel, Generic[T]):
 ## 챗봇 WebSocket 흐름
 
 ```
-Client                    Server                     Claude API
+Client                    Server                     OpenAI API
   │── POST /chatbot/sessions ──►│                          │
   │◄── { session_id, ws_url } ──│                          │
   │                              │                          │
   │── WS connect ──────────────►│                          │
   │── user_message ────────────►│── messages.create ──────►│
   │                              │   (stream=True)          │
-  │◄── assistant_token ─────────│◄── content_block_delta ──│
-  │◄── assistant_token ─────────│◄── content_block_delta ──│
-  │◄── assistant_message_done ──│◄── message_stop ─────────│
+  │◄── assistant_token ─────────│◄── chat.completion.chunk ──│
+  │◄── assistant_token ─────────│◄── chat.completion.chunk ──│
+  │◄── assistant_message_done ──│◄── [DONE] ─────────│
   │                              │                          │
   │── decision: BUY ───────────►│                          │
   │◄── session_closed ──────────│── (async) 요약 생성 ────►│

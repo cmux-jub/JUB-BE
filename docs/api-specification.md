@@ -62,8 +62,7 @@
 {
   "email": "user@example.com",
   "password": "string",
-  "nickname": "string",
-  "birth_year": 1998
+  "nickname": "string"
 }
 ```
 
@@ -259,6 +258,9 @@
 - `cursor` (페이지네이션)
 - `limit` (default 20, max 100)
 
+`from_date`, `to_date`를 생략하면 기본적으로 최근 3개월 거래를 조회합니다.
+`spending_comparison.difference_amount`는 이번 달 사용액 - 전달 사용액이며, 양수는 전달 대비 증가, 음수는 감소를 의미합니다.
+
 응답 `200`:
 
 ```json
@@ -278,7 +280,13 @@
         "labeled_at": null
       }
     ],
-    "next_cursor": "c_xxx"
+    "next_cursor": "c_xxx",
+    "spending_comparison": {
+      "current_month_amount": 420000,
+      "previous_month_amount": 380000,
+      "difference_amount": 40000,
+      "difference_display": "+40000"
+    }
   }
 }
 ```
@@ -639,6 +647,7 @@ WebSocket 사용 권장이지만 REST 폴백용.
     "started_at": "...",
     "ended_at": "...",
     "messages": [
+    { "role": "system", "content": "...(??? ????)" },
       { "role": "user", "content": "...", "created_at": "..." },
       { "role": "assistant", "content": "...", "created_at": "..." }
     ],
@@ -934,21 +943,21 @@ PRD §5.2 — 챗봇에서 SKIP 결정한 누적 금액.
 
 ## 9. AI 내부 LLM 호출 명세
 
-> 이 섹션은 외부 노출 API가 아니라, 백엔드 → Claude API 호출 명세.
+> 이 섹션은 외부 노출 API가 아니라, 백엔드 → OpenAI API 호출 명세.
 > 
 
 ### 9.1 사용 모델
 
-- **챗봇 풀 모드**: `claude-opus-4-7` (FULL)
-- **챗봇 라이트 모드**: `claude-haiku-4-5-20251001` (LITE, 다운그레이드)
-- **요약/분류 백그라운드**: `claude-haiku-4-5-20251001`
-- **인사이트 카피 생성**: `claude-sonnet-4-6`
+- **챗봇 풀 모드**: `gpt-4o` (FULL)
+- **챗봇 라이트 모드**: `gpt-4o-mini` (LITE, 다운그레이드)
+- **요약/분류 백그라운드**: `gpt-4o-mini`
+- **인사이트 카피 생성**: `gpt-4o-mini`
 
 ---
 
 ### 9.2 챗봇 상담 호출
 
-**엔드포인트 (Anthropic)**: `POST https://api.anthropic.com/v1/messages`
+**엔드포인트 (OpenAI)**: `POST https://api.openai.com/v1/chat/completions`
 
 **시스템 프롬프트 (구조)**:
 
@@ -975,11 +984,11 @@ PRD §5.2 — 챗봇에서 SKIP 결정한 누적 금액.
 
 ```json
 {
-  "model": "claude-opus-4-7",
+  "model": "gpt-4o",
   "max_tokens": 500,
   "stream": true,
-  "system": "...(위 시스템 프롬프트)",
   "messages": [
+    { "role": "system", "content": "...(??? ????)" },
     { "role": "user", "content": "에어팟 프로 35만원 살까 고민 중" },
     { "role": "assistant", "content": "35만원이군요. 지난 한 달간..." },
     { "role": "user", "content": "출퇴근 때마다 쓰니까 자주 쓸 것 같아" }
@@ -989,8 +998,8 @@ PRD §5.2 — 챗봇에서 SKIP 결정한 누적 금액.
 
 **스트리밍 응답 처리**:
 
-- `content_block_delta` 이벤트의 `text` → 클라이언트 WebSocket에 `assistant_token`으로 전달
-- `message_stop` → `assistant_message_done` 전송 후 DB 저장
+- `chat.completion.chunk` 이벤트의 `text` → 클라이언트 WebSocket에 `assistant_token`으로 전달
+- `[DONE]` → `assistant_message_done` 전송 후 DB 저장
 
 ---
 
@@ -1016,10 +1025,10 @@ JSON만 출력하고, 설명/마크다운 금지.
 
 ```json
 {
-  "model": "claude-haiku-4-5-20251001",
+  "model": "gpt-4o-mini",
   "max_tokens": 300,
-  "system": "...(위)",
   "messages": [
+    { "role": "system", "content": "...(??? ????)" },
     { "role": "user", "content": "[전체 대화 + 결정]" }
   ]
 }
@@ -1044,7 +1053,7 @@ JSON만 출력하고, 설명/마크다운 금지.
 JSON만 출력. {"category": "...", "confidence": 0.0~1.0}
 ```
 
-**모델**: `claude-haiku-4-5-20251001`
+**모델**: `gpt-4o-mini`
 
 ---
 
@@ -1068,7 +1077,7 @@ JSON 출력:
 { "selected": [{ "transaction_id": "...", "reason": "..." }] }
 ```
 
-**모델**: `claude-haiku-4-5-20251001`
+**모델**: `gpt-4o-mini`
 
 ---
 
@@ -1088,7 +1097,7 @@ JSON 출력:
 예시 나쁨: "또 충동구매 하셨네요"
 ```
 
-**모델**: `claude-sonnet-4-6`
+**모델**: `gpt-4o-mini`
 
 ---
 
@@ -1104,7 +1113,7 @@ JSON 출력:
 | `BANK_LINK_REQUIRED` | 409 | 오픈뱅킹 미연동 |
 | `LABELING_REQUIRED` | 409 | 5라벨 미달 (챗봇 활성화 안 됨) |
 | `CHATBOT_QUOTA_EXCEEDED` | 402 | 무료 사용량 초과 |
-| `LLM_UNAVAILABLE` | 503 | Claude API 일시 장애 |
+| `LLM_UNAVAILABLE` | 503 | OpenAI API 일시 장애 |
 | `INTERNAL_ERROR` | 500 | 서버 내부 오류 |
 
 ---
@@ -1126,7 +1135,7 @@ JSON 출력:
 10. WS /ws/chatbot/{session_id}
 11. (대화)
 12. WS: { "type": "decision", "decision": "BUY" }
-13. (서버 비동기) Claude로 요약 생성 → DB 저장
+13. (서버 비동기) OpenAI로 요약 생성 → DB 저장
 ```
 
 ### 11.2 일요일 회고
