@@ -29,9 +29,15 @@ from app.schemas.chatbot import (
     CreateChatbotSessionResponse,
     DecideChatbotSessionResponse,
 )
+from app.schemas.feedback import AmountComparison, HappyArchiveItem, SpendingComparison, TopHappyConsumption
 from app.schemas.insight import HappyPurchasesResponse, SavedAmountResponse
-from app.schemas.onboarding import FirstInsightResponse, FirstInsightSupportingData, OnboardingProgressResponse
-from app.schemas.retrospective import SubmitRetrospectiveResponse, WeeklyInsight
+from app.schemas.onboarding import (
+    FirstInsightResponse,
+    FirstInsightSupportingData,
+    OnboardingProgressResponse,
+    SubmitOnboardingFeedbackResponse,
+)
+from app.schemas.retrospective import SubmitRetrospectiveResponse, WeeklyInsight, WeeklySummaryResponse
 from app.schemas.subscription import SubscriptionStatusResponse
 from app.schemas.transaction import MonthlySpendingComparison, TransactionListResponse
 
@@ -76,6 +82,38 @@ class FakeOnboardingService:
             supporting_data=FirstInsightSupportingData(category="지속 소비", avg_score=4.6, count=5),
         )
 
+    async def submit_feedback(self, user: User, request):
+        return SubmitOnboardingFeedbackResponse(
+            labeled_count=5,
+            required_count=5,
+            is_chatbot_unlocked=True,
+            chatbot_context_ready=True,
+            first_insight=FirstInsightResponse(
+                headline="당신은 지속 소비에 쓸 때 만족도가 높네요",
+                supporting_data=FirstInsightSupportingData(category="지속 소비", avg_score=4.6, count=5),
+            ),
+            top_happy_consumption=TopHappyConsumption(
+                message="tester님의 행복 소비는 지속 소비 지출입니다.",
+                category="LASTING",
+                category_name="지속 소비",
+                avg_score=5.0,
+                total_amount=89000,
+                count=1,
+            ),
+            happy_purchase_archive=[
+                HappyArchiveItem(
+                    transaction_id="t_1",
+                    amount=89000,
+                    related_total_amount=89000,
+                    merchant="유니클로",
+                    category="LASTING",
+                    occurred_at=datetime(2026, 4, 20, 12, 0, tzinfo=UTC),
+                    score=5,
+                    text="오래 입을 수 있어서 좋음",
+                )
+            ],
+        )
+
 
 class FakeChatbotService:
     async def start_session(self, user: User, request):
@@ -110,8 +148,41 @@ class FakeRetrospectiveService:
             retrospective_id="r_test",
             week_start=request.week_start,
             completed_at=datetime(2026, 4, 26, 20, 0, tzinfo=UTC),
-            submitted_count=len(request.entries),
+            submitted_count=len(request.answers),
             weekly_insight=WeeklyInsight(headline="이번 주 만족도 평균 4.0점", highlight="지속 소비"),
+        )
+
+    async def get_weekly_summary(self, user: User, retrospective_id: str):
+        return WeeklySummaryResponse(
+            retrospective_id=retrospective_id,
+            week_start=date(2026, 4, 20),
+            week_end=date(2026, 4, 26),
+            spending_comparison=SpendingComparison(
+                current_amount=200000,
+                previous_amount=350000,
+                difference_amount=-150000,
+                difference_percent=-42.9,
+                difference_display="-150000",
+                difference_percent_display="-42.9%",
+                saved_amount=150000,
+            ),
+            saved_amount_comparison=AmountComparison(
+                current_amount=350000,
+                previous_amount=0,
+                difference_amount=350000,
+                difference_percent=None,
+                difference_display="+350000",
+                difference_percent_display="N/A",
+            ),
+            top_happy_consumption=TopHappyConsumption(
+                message="tester님의 행복 소비는 지속 소비 지출입니다.",
+                category="LASTING",
+                category_name="지속 소비",
+                avg_score=4.0,
+                total_amount=200000,
+                count=1,
+            ),
+            happy_purchase_archive=[],
         )
 
 
@@ -143,7 +214,9 @@ class EmptyTransactionService:
                 current_month_amount=0,
                 previous_month_amount=0,
                 difference_amount=0,
+                difference_percent=None,
                 difference_display="0",
+                difference_percent_display="N/A",
             ),
         )
 
@@ -194,8 +267,15 @@ def test_new_user_core_journey(app: FastAPI, client: TestClient):
     progress = client.get("/v1/onboarding/progress")
     assert progress.json()["data"]["is_chatbot_unlocked"] is True
 
-    insight = client.post("/v1/onboarding/first-insight")
-    assert insight.json()["data"]["supporting_data"]["category"] == "지속 소비"
+    onboarding_feedback = client.post(
+        "/v1/onboarding/feedback",
+        json={
+            "answers": [
+                {"question_id": "oq_t_1", "transaction_id": "t_1", "score": 5, "text": "오래 입을 수 있어서 좋음"}
+            ]
+        },
+    )
+    assert onboarding_feedback.json()["data"]["happy_purchase_archive"][0]["transaction_id"] == "t_1"
 
     chatbot = client.post("/v1/chatbot/sessions", json={"initial_message": "에어팟 살까?"})
     assert chatbot.json()["data"]["session_id"] == "sess_test"
@@ -205,9 +285,16 @@ def test_new_user_core_journey(app: FastAPI, client: TestClient):
 
     retrospective = client.post(
         "/v1/retrospectives",
-        json={"week_start": "2026-04-20", "entries": [{"transaction_id": "t_1", "score": 4, "text": "좋음"}]},
+        json={
+            "week_start": "2026-04-20",
+            "answers": [{"question_id": "rq_t_1", "transaction_id": "t_1", "score": 4, "text": "좋음"}],
+        },
     )
     assert retrospective.json()["data"]["retrospective_id"] == "r_test"
+    assert "spending_comparison" not in retrospective.json()["data"]
+
+    weekly_summary = client.get("/v1/retrospectives/r_test/weekly-summary")
+    assert weekly_summary.json()["data"]["spending_comparison"]["saved_amount"] == 150000
 
     saved_amount = client.get("/v1/insights/saved-amount")
     assert saved_amount.json()["data"]["total_saved"] == 350000

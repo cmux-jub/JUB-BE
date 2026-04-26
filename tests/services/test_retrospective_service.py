@@ -14,7 +14,7 @@ from app.models.chatbot import ChatbotSession
 from app.models.retrospective import Retrospective, create_retrospective_id
 from app.models.transaction import Transaction
 from app.models.user import User
-from app.schemas.retrospective import RetrospectiveEntryRequest, SubmitRetrospectiveRequest
+from app.schemas.retrospective import RetrospectiveAnswerRequest, SubmitRetrospectiveRequest
 from app.services.retrospective_service import RetrospectiveService
 
 
@@ -38,6 +38,16 @@ class FakeRetrospectiveRepository:
         self.retrospectives.append(retrospective)
         return retrospective
 
+    async def find_by_id(self, user_id: str, retrospective_id: str):
+        return next(
+            (
+                retrospective
+                for retrospective in self.retrospectives
+                if retrospective.user_id == user_id and retrospective.id == retrospective_id
+            ),
+            None,
+        )
+
     async def list_by_user(self, user_id: str, **kwargs):
         retrospectives = [retrospective for retrospective in self.retrospectives if retrospective.user_id == user_id]
         return retrospectives[: kwargs["limit"]]
@@ -51,6 +61,19 @@ class FakeTransactionRepository:
     async def list_for_retrospective_week(self, user_id: str, **kwargs):
         return [transaction for transaction in self.transactions.values() if transaction.user_id == user_id]
 
+    async def list_labeled_for_insight(self, user_id: str):
+        return [
+            transaction
+            for transaction in [*self.transactions.values(), *self.previous_transactions]
+            if transaction.user_id == user_id and transaction.satisfaction_score is not None
+        ]
+
+    async def list_labeled_since(self, user_id: str, since=None):
+        transactions = await self.list_labeled_for_insight(user_id)
+        if since is not None:
+            transactions = [transaction for transaction in transactions if transaction.occurred_at >= since]
+        return transactions
+
     async def find_by_id(self, user_id: str, transaction_id: str):
         transaction = self.transactions.get(transaction_id)
         if transaction is None or transaction.user_id != user_id:
@@ -62,7 +85,21 @@ class FakeTransactionRepository:
         return transaction
 
     async def list_labeled_between(self, user_id: str, from_date, to_date):
-        return [transaction for transaction in self.previous_transactions if transaction.user_id == user_id]
+        all_transactions = [*self.transactions.values(), *self.previous_transactions]
+        return [
+            transaction
+            for transaction in all_transactions
+            if transaction.user_id == user_id
+            and transaction.satisfaction_score is not None
+            and from_date <= transaction.occurred_at <= to_date
+        ]
+
+    async def sum_amount_between(self, user_id: str, from_date, to_date):
+        return sum(
+            transaction.amount
+            for transaction in [*self.transactions.values(), *self.previous_transactions]
+            if transaction.user_id == user_id and from_date <= transaction.occurred_at <= to_date
+        )
 
 
 class FakeChatbotRepository:
@@ -78,6 +115,20 @@ class FakeChatbotRepository:
             for session in self.sessions
             if session.user_id == user_id and session.linked_transaction_id in transaction_ids
         ]
+
+    async def list_decided_sessions(self, user_id: str, decisions, from_date=None, to_date=None, limit: int = 100):
+        sessions = [
+            session
+            for session in self.sessions
+            if session.user_id == user_id and session.decision in {decision.value for decision in decisions}
+        ]
+        if from_date is not None:
+            sessions = [
+                session for session in sessions if session.ended_at is not None and session.ended_at >= from_date
+            ]
+        if to_date is not None:
+            sessions = [session for session in sessions if session.ended_at is not None and session.ended_at <= to_date]
+        return sessions[:limit]
 
 
 def create_user() -> User:
@@ -100,6 +151,7 @@ def create_transaction(
     score: int | None = None,
     confidence: float = 0.9,
     linked_chatbot_session_id: str | None = None,
+    occurred_at: datetime | None = None,
 ) -> Transaction:
     return Transaction(
         id=transaction_id,
@@ -111,7 +163,7 @@ def create_transaction(
         merchant_mcc=None,
         category=category.value,
         category_confidence=confidence,
-        occurred_at=datetime(2026, 4, 22, 12, 0, tzinfo=UTC),
+        occurred_at=occurred_at or datetime(2026, 4, 22, 12, 0, tzinfo=UTC),
         satisfaction_score=score,
         linked_chatbot_session_id=linked_chatbot_session_id,
     )
@@ -149,8 +201,9 @@ async def test_get_current_week_returns_curated_transactions_with_chatbot_summar
     assert result.week_start == date(2026, 4, 20)
     assert result.week_end == date(2026, 4, 26)
     assert result.is_completed is False
-    assert result.transactions[0].selection_reason == RetrospectiveSelectionReason.CHATBOT_FOLLOW_UP
-    assert result.transactions[0].linked_chatbot_summary.session_id == "sess_1"
+    assert result.questions[0].question_id == "rq_t_1"
+    assert result.questions[0].selection_reason == RetrospectiveSelectionReason.CHATBOT_FOLLOW_UP
+    assert result.questions[0].linked_chatbot_summary.session_id == "sess_1"
 
 
 @pytest.mark.asyncio
@@ -175,14 +228,27 @@ async def test_get_current_week_marks_completed_when_retrospective_exists():
 @pytest.mark.asyncio
 async def test_submit_retrospective_updates_transactions_and_creates_insight():
     transaction = create_transaction("t_1", category=Category.LASTING)
-    previous = create_transaction("t_prev", category=Category.LASTING, score=3)
+    previous = create_transaction(
+        "t_prev",
+        category=Category.LASTING,
+        amount=70000,
+        score=3,
+        occurred_at=datetime(2026, 4, 15, 12, 0, tzinfo=UTC),
+    )
     service = create_service([transaction], previous_transactions=[previous])
 
     result = await service.submit_retrospective(
         create_user(),
         SubmitRetrospectiveRequest(
             week_start=date(2026, 4, 20),
-            entries=[RetrospectiveEntryRequest(transaction_id="t_1", score=5, text="잘 씀")],
+            answers=[
+                RetrospectiveAnswerRequest(
+                    question_id="rq_t_1",
+                    transaction_id="t_1",
+                    score=5,
+                    text="잘 씀",
+                )
+            ],
         ),
     )
 
@@ -190,6 +256,7 @@ async def test_submit_retrospective_updates_transactions_and_creates_insight():
     assert result.submitted_count == 1
     assert result.weekly_insight.headline == "이번 주 만족도 평균 5.0점, 지난주보다 +2.0"
     assert result.weekly_insight.highlight == "지속 소비 카테고리에서 가장 높은 만족"
+    assert not hasattr(result, "spending_comparison") or "spending_comparison" not in result.model_fields
     assert transaction.satisfaction_score == 5
     assert transaction.satisfaction_text == "잘 씀"
 
@@ -203,7 +270,14 @@ async def test_submit_retrospective_rejects_unknown_transaction():
             create_user(),
             SubmitRetrospectiveRequest(
                 week_start=date(2026, 4, 20),
-                entries=[RetrospectiveEntryRequest(transaction_id="missing", score=4, text=None)],
+                answers=[
+                    RetrospectiveAnswerRequest(
+                        question_id="rq_missing",
+                        transaction_id="missing",
+                        score=4,
+                        text=None,
+                    )
+                ],
             ),
         )
 
@@ -231,3 +305,45 @@ async def test_list_retrospectives_returns_history_with_next_cursor():
 
     assert len(result.retrospectives) == 2
     assert result.next_cursor == "r_1"
+
+
+@pytest.mark.asyncio
+async def test_get_weekly_summary_returns_spending_and_archive():
+    transaction = create_transaction("t_1", category=Category.LASTING, score=5)
+    previous = create_transaction(
+        "t_prev",
+        category=Category.LASTING,
+        amount=70000,
+        score=3,
+        occurred_at=datetime(2026, 4, 15, 12, 0, tzinfo=UTC),
+    )
+    retrospective = Retrospective(
+        id="r_1",
+        user_id="u_test",
+        week_start=date(2026, 4, 20),
+        week_end=date(2026, 4, 26),
+        completed_at=datetime(2026, 4, 26, 20, 0, tzinfo=UTC),
+        avg_score=5.0,
+        entry_count=1,
+        weekly_insight={"headline": "좋아요", "highlight": "지속 소비"},
+    )
+    service = create_service([transaction], retrospectives=[retrospective], previous_transactions=[previous])
+
+    result = await service.get_weekly_summary(create_user(), "r_1")
+
+    assert result.retrospective_id == "r_1"
+    assert result.week_start == date(2026, 4, 20)
+    assert result.week_end == date(2026, 4, 26)
+    assert result.spending_comparison.previous_amount == 70000
+    assert result.top_happy_consumption.message == "tester님의 행복 소비는 지속 소비 지출입니다."
+    assert result.happy_purchase_archive[0].transaction_id == "t_1"
+
+
+@pytest.mark.asyncio
+async def test_get_weekly_summary_not_found():
+    service = create_service([])
+
+    with pytest.raises(AppException) as exc_info:
+        await service.get_weekly_summary(create_user(), "r_nonexistent")
+
+    assert exc_info.value.code == "NOT_FOUND"

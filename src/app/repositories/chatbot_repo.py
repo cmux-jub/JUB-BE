@@ -64,6 +64,7 @@ class ChatbotRepository:
         user_id: str,
         decisions: list[ChatbotDecision],
         from_date: datetime | None = None,
+        to_date: datetime | None = None,
         limit: int = 100,
     ) -> list[ChatbotSession]:
         stmt = select(ChatbotSession).where(
@@ -72,6 +73,8 @@ class ChatbotRepository:
         )
         if from_date is not None:
             stmt = stmt.where(ChatbotSession.ended_at >= from_date)
+        if to_date is not None:
+            stmt = stmt.where(ChatbotSession.ended_at <= to_date)
         stmt = stmt.order_by(ChatbotSession.ended_at.desc().nullslast(), ChatbotSession.started_at.desc()).limit(limit)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())

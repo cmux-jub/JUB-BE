@@ -6,6 +6,7 @@ from app.core.enums import Category, OnboardingNextStep, OnboardingSelectionReas
 from app.core.exceptions import AppException
 from app.models.transaction import Transaction
 from app.models.user import User
+from app.schemas.onboarding import OnboardingAnswerRequest, SubmitOnboardingFeedbackRequest
 from app.services.onboarding_service import OnboardingService
 
 
@@ -25,12 +26,14 @@ class FakeTransactionRepository:
     async def count_by_user(self, user_id: str):
         return len([transaction for transaction in self.transactions if transaction.user_id == user_id])
 
-    async def list_unlabeled_for_onboarding(self, user_id: str, limit: int):
+    async def list_unlabeled_for_onboarding(self, user_id: str, limit: int, since=None):
         transactions = [
             transaction
             for transaction in self.transactions
             if transaction.user_id == user_id and transaction.satisfaction_score is None
         ]
+        if since is not None:
+            transactions = [transaction for transaction in transactions if transaction.occurred_at >= since]
         return transactions[:limit]
 
     async def list_labeled_for_insight(self, user_id: str):
@@ -39,6 +42,19 @@ class FakeTransactionRepository:
             for transaction in self.transactions
             if transaction.user_id == user_id and transaction.satisfaction_score is not None
         ]
+
+    async def find_by_id(self, user_id: str, transaction_id: str):
+        return next(
+            (
+                transaction
+                for transaction in self.transactions
+                if transaction.user_id == user_id and transaction.id == transaction_id
+            ),
+            None,
+        )
+
+    async def save(self, transaction: Transaction):
+        return transaction
 
 
 class FakeUserRepository:
@@ -104,6 +120,24 @@ async def test_get_transactions_to_label_returns_curated_questions():
 
 
 @pytest.mark.asyncio
+async def test_get_questions_returns_five_to_ten_ai_feedback_questions():
+    user = create_user()
+    transactions = [
+        create_transaction(f"t_{index}", Category.LASTING, amount=50000 + index, merchant=f"상점{index}")
+        for index in range(6)
+    ]
+    service = OnboardingService(FakeTransactionRepository(transactions), FakeUserRepository())
+
+    result = await service.get_questions(user, limit=6)
+
+    assert result.question_count == 6
+    assert result.min_question_count == 5
+    assert result.max_question_count == 10
+    assert result.questions[0].question_id == "oq_t_0"
+    assert result.questions[0].question.answer_type == "SCORE_WITH_TEXT"
+
+
+@pytest.mark.asyncio
 async def test_get_progress_requires_bank_link_when_no_transactions():
     user = create_user(status=OnboardingStatus.NEEDS_LABELING)
     service = OnboardingService(FakeTransactionRepository([]), FakeUserRepository())
@@ -162,3 +196,32 @@ async def test_create_first_insight_uses_highest_average_category():
     assert result.supporting_data.avg_score == 5.0
     assert result.supporting_data.count == 2
     assert user.onboarding_status == OnboardingStatus.READY.value
+
+
+@pytest.mark.asyncio
+async def test_submit_feedback_updates_answers_and_returns_happy_archive():
+    user = create_user(status=OnboardingStatus.NEEDS_LABELING)
+    transactions = [create_transaction(f"t_{index}", Category.LASTING) for index in range(5)]
+    service = OnboardingService(FakeTransactionRepository(transactions), FakeUserRepository())
+
+    result = await service.submit_feedback(
+        user,
+        SubmitOnboardingFeedbackRequest(
+            answers=[
+                OnboardingAnswerRequest(
+                    question_id=f"oq_t_{index}",
+                    transaction_id=f"t_{index}",
+                    score=5,
+                    text="좋음",
+                )
+                for index in range(5)
+            ]
+        ),
+    )
+
+    assert result.is_chatbot_unlocked is True
+    assert result.chatbot_context_ready is True
+    assert result.top_happy_consumption.message == "tester님의 행복 소비는 지속 소비 지출입니다."
+    assert len(result.happy_purchase_archive) == 5
+    assert result.happy_purchase_archive[0].related_total_amount == 250000
+    assert transactions[0].satisfaction_score == 5

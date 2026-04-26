@@ -2,7 +2,16 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, Field
 
-from app.core.enums import Category, ChatbotDecision, RetrospectiveSelectionReason
+from app.core.enums import ChatbotDecision, RetrospectiveSelectionReason
+from app.schemas.feedback import (
+    AmountComparison,
+    FeedbackAnswerRequest,
+    FeedbackQuestionContent,
+    FeedbackTransactionSnapshot,
+    HappyArchiveItem,
+    SpendingComparison,
+    TopHappyConsumption,
+)
 
 
 class LinkedChatbotSummary(BaseModel):
@@ -11,13 +20,12 @@ class LinkedChatbotSummary(BaseModel):
     decision: ChatbotDecision
 
 
-class RetrospectiveTransactionItem(BaseModel):
-    transaction_id: str
-    amount: int
-    merchant: str
-    category: Category
-    occurred_at: datetime
+class RetrospectiveQuestionItem(BaseModel):
+    question_id: str
+    transaction: FeedbackTransactionSnapshot
     selection_reason: RetrospectiveSelectionReason
+    pattern_summary: str
+    question: FeedbackQuestionContent
     linked_chatbot_summary: LinkedChatbotSummary | None
 
 
@@ -25,18 +33,19 @@ class CurrentWeekRetrospectiveResponse(BaseModel):
     week_start: date
     week_end: date
     is_completed: bool
-    transactions: list[RetrospectiveTransactionItem]
+    question_count: int
+    min_question_count: int
+    max_question_count: int
+    questions: list[RetrospectiveQuestionItem]
 
 
-class RetrospectiveEntryRequest(BaseModel):
-    transaction_id: str
-    score: int = Field(ge=1, le=5)
-    text: str | None = Field(default=None, max_length=500)
+class RetrospectiveAnswerRequest(FeedbackAnswerRequest):
+    pass
 
 
 class SubmitRetrospectiveRequest(BaseModel):
     week_start: date
-    entries: list[RetrospectiveEntryRequest] = Field(min_length=1)
+    answers: list[RetrospectiveAnswerRequest] = Field(min_length=1, max_length=10)
 
 
 class WeeklyInsight(BaseModel):
@@ -50,6 +59,16 @@ class SubmitRetrospectiveResponse(BaseModel):
     completed_at: datetime
     submitted_count: int
     weekly_insight: WeeklyInsight
+
+
+class WeeklySummaryResponse(BaseModel):
+    retrospective_id: str
+    week_start: date
+    week_end: date
+    spending_comparison: SpendingComparison
+    saved_amount_comparison: AmountComparison
+    top_happy_consumption: TopHappyConsumption
+    happy_purchase_archive: list[HappyArchiveItem]
 
 
 class RetrospectiveHistoryItem(BaseModel):

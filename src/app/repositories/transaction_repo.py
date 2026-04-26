@@ -60,7 +60,12 @@ class TransactionRepository:
         result = await self.db.execute(stmt)
         return result.scalar_one()
 
-    async def list_unlabeled_for_onboarding(self, user_id: str, limit: int) -> list[Transaction]:
+    async def list_unlabeled_for_onboarding(
+        self,
+        user_id: str,
+        limit: int,
+        since: datetime | None = None,
+    ) -> list[Transaction]:
         stmt = (
             select(Transaction)
             .where(
@@ -71,6 +76,8 @@ class TransactionRepository:
             .order_by(Transaction.category_confidence.asc(), Transaction.amount.desc(), Transaction.occurred_at.desc())
             .limit(limit)
         )
+        if since is not None:
+            stmt = stmt.where(Transaction.occurred_at >= since)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 

@@ -5,10 +5,37 @@ from fastapi import APIRouter, Depends, Query
 from app.core.deps import get_current_user, get_onboarding_service
 from app.models.user import User
 from app.schemas.common import ApiResponse
-from app.schemas.onboarding import FirstInsightResponse, OnboardingProgressResponse, TransactionsToLabelResponse
+from app.schemas.onboarding import (
+    FirstInsightResponse,
+    OnboardingProgressResponse,
+    OnboardingQuestionsResponse,
+    SubmitOnboardingFeedbackRequest,
+    SubmitOnboardingFeedbackResponse,
+    TransactionsToLabelResponse,
+)
 from app.services.onboarding_service import OnboardingService
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
+
+
+@router.get("/questions", response_model=ApiResponse[OnboardingQuestionsResponse])
+async def get_onboarding_questions(
+    current_user: Annotated[User, Depends(get_current_user)],
+    service: Annotated[OnboardingService, Depends(get_onboarding_service)],
+    limit: Annotated[int, Query(ge=5, le=10)] = 10,
+) -> ApiResponse[OnboardingQuestionsResponse]:
+    result = await service.get_questions(current_user, limit=limit)
+    return ApiResponse(success=True, data=result)
+
+
+@router.post("/feedback", response_model=ApiResponse[SubmitOnboardingFeedbackResponse])
+async def submit_onboarding_feedback(
+    request: SubmitOnboardingFeedbackRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    service: Annotated[OnboardingService, Depends(get_onboarding_service)],
+) -> ApiResponse[SubmitOnboardingFeedbackResponse]:
+    result = await service.submit_feedback(current_user, request)
+    return ApiResponse(success=True, data=result)
 
 
 @router.get("/transactions-to-label", response_model=ApiResponse[TransactionsToLabelResponse])

@@ -55,6 +55,8 @@ class RetrospectiveSelectionReason(StrEnum):
     HIGH_UNCERTAINTY = "HIGH_UNCERTAINTY"
     DIVERSITY = "DIVERSITY"
     CHATBOT_FOLLOW_UP = "CHATBOT_FOLLOW_UP"
+    REPEATED_MERCHANT = "REPEATED_MERCHANT"
+    TIME_PATTERN = "TIME_PATTERN"
 
 
 class SavedAmountPeriod(StrEnum):

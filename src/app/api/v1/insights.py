@@ -9,12 +9,22 @@ from app.schemas.common import ApiResponse
 from app.schemas.insight import (
     CategorySatisfactionResponse,
     HappyPurchasesResponse,
+    MainPageSummaryResponse,
     SavedAmountResponse,
     ScoreTrendResponse,
 )
 from app.services.insight_service import InsightService
 
 router = APIRouter(prefix="/insights", tags=["insights"])
+
+
+@router.get("/main", response_model=ApiResponse[MainPageSummaryResponse])
+async def get_main_page_summary(
+    current_user: Annotated[User, Depends(get_current_user)],
+    service: Annotated[InsightService, Depends(get_insight_service)],
+) -> ApiResponse[MainPageSummaryResponse]:
+    result = await service.get_main_summary(user_id=current_user.id, nickname=current_user.nickname)
+    return ApiResponse(success=True, data=result)
 
 
 @router.get("/happy-purchases", response_model=ApiResponse[HappyPurchasesResponse])

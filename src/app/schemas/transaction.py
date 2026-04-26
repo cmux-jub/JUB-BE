@@ -21,7 +21,9 @@ class MonthlySpendingComparison(BaseModel):
     current_month_amount: int
     previous_month_amount: int
     difference_amount: int
+    difference_percent: float | None
     difference_display: str
+    difference_percent_display: str
 
 
 class TransactionListResponse(BaseModel):

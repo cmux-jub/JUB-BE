@@ -6,11 +6,14 @@ from fastapi.testclient import TestClient
 from app.core.deps import get_current_user, get_insight_service
 from app.core.enums import Category, OnboardingStatus, SubscriptionTier
 from app.models.user import User
+from app.schemas.feedback import AmountComparison, TopHappyConsumption
 from app.schemas.insight import (
     CategorySatisfactionItem,
     CategorySatisfactionResponse,
     HappyPurchaseItem,
     HappyPurchasesResponse,
+    MainMonthlySpendingResponse,
+    MainPageSummaryResponse,
     RecentSkipItem,
     SavedAmountResponse,
     ScoreTrendPoint,
@@ -19,12 +22,43 @@ from app.schemas.insight import (
 
 
 class FakeInsightService:
+    async def get_main_summary(self, **kwargs):
+        return MainPageSummaryResponse(
+            monthly_spending=MainMonthlySpendingResponse(
+                current_month_amount=100000,
+                previous_month_amount=200000,
+                difference_amount=-100000,
+                difference_percent=-50.0,
+                difference_display="-100000",
+                difference_percent_display="-50.0%",
+            ),
+            saved_amount_comparison=AmountComparison(
+                current_amount=1500000,
+                previous_amount=500000,
+                difference_amount=1000000,
+                difference_percent=200.0,
+                difference_display="+1000000",
+                difference_percent_display="+200.0%",
+            ),
+            top_happy_consumption=TopHappyConsumption(
+                message="tester님의 행복 소비는 즉시 소비 지출입니다.",
+                category=Category.IMMEDIATE,
+                category_name="즉시 소비",
+                avg_score=5.0,
+                total_amount=10000,
+                count=1,
+            ),
+            saved_amount=1500000,
+            saved_count=1,
+        )
+
     async def get_happy_purchases(self, **kwargs):
         return HappyPurchasesResponse(
             items=[
                 HappyPurchaseItem(
                     transaction_id="t_1",
                     amount=10000,
+                    related_total_amount=10000,
                     merchant="스타벅스",
                     category=Category.IMMEDIATE,
                     occurred_at=datetime(2026, 4, 20, 12, 0, tzinfo=UTC),
@@ -86,6 +120,18 @@ def test_get_happy_purchases_success(app: FastAPI, client: TestClient):
 
     assert response.status_code == 200
     assert response.json()["data"]["total_amount"] == 10000
+
+
+def test_get_main_page_summary_success(app: FastAPI, client: TestClient):
+    install_insight_overrides(app)
+
+    response = client.get("/v1/insights/main")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["monthly_spending"]["difference_percent_display"] == "-50.0%"
+    assert response.json()["data"]["saved_amount_comparison"]["difference_percent_display"] == "+200.0%"
+    assert response.json()["data"]["top_happy_consumption"]["message"] == "tester님의 행복 소비는 즉시 소비 지출입니다."
+    assert response.json()["data"]["saved_amount"] == 1500000
 
 
 def test_get_saved_amount_success(app: FastAPI, client: TestClient):

@@ -39,12 +39,19 @@ class FakeTransactionRepository:
             transactions = [transaction for transaction in transactions if transaction.occurred_at >= since]
         return transactions
 
+    async def sum_amount_between(self, user_id: str, from_date: datetime, to_date: datetime) -> int:
+        return sum(
+            transaction.amount
+            for transaction in self.transactions
+            if transaction.user_id == user_id and from_date <= transaction.occurred_at <= to_date
+        )
+
 
 class FakeChatbotRepository:
     def __init__(self, sessions: list[ChatbotSession]) -> None:
         self.sessions = sessions
 
-    async def list_decided_sessions(self, user_id: str, decisions, from_date=None, limit: int = 100):
+    async def list_decided_sessions(self, user_id: str, decisions, from_date=None, to_date=None, limit: int = 100):
         sessions = [
             session
             for session in self.sessions
@@ -54,6 +61,8 @@ class FakeChatbotRepository:
             sessions = [
                 session for session in sessions if session.ended_at is not None and session.ended_at >= from_date
             ]
+        if to_date is not None:
+            sessions = [session for session in sessions if session.ended_at is not None and session.ended_at <= to_date]
         return sessions[:limit]
 
 
@@ -122,6 +131,7 @@ async def test_get_happy_purchases_returns_totals_and_items():
     assert len(result.items) == 2
     assert result.total_count == 2
     assert result.total_amount == 30000
+    assert result.items[0].related_total_amount == 10000
 
 
 @pytest.mark.asyncio
@@ -156,6 +166,40 @@ async def test_get_saved_amount_sums_skip_decisions():
     assert result.skip_count == 1
     assert result.reconsider_count == 1
     assert result.recent_skips[0].product == "맥북"
+
+
+@pytest.mark.asyncio
+async def test_get_main_summary_returns_monthly_spending_and_saved_amount():
+    sessions = [
+        ChatbotSession(
+            id="sess_skip",
+            user_id="u_test",
+            initial_message="맥북 살까?",
+            amount_hint=1500000,
+            model_tier="FULL",
+            decision=ChatbotDecision.SKIP.value,
+            summary={"product": "맥북", "amount": 1500000, "decision": "SKIP"},
+            ended_at=datetime(2026, 4, 10, 12, 0, tzinfo=UTC),
+        )
+    ]
+    service = create_service(
+        transactions=[
+            create_transaction("t_apr", Category.LASTING, 4, 100000, datetime(2026, 4, 20, 12, 0, tzinfo=UTC)),
+            create_transaction("t_mar", Category.LASTING, 4, 200000, datetime(2026, 3, 20, 12, 0, tzinfo=UTC)),
+        ],
+        sessions=sessions,
+    )
+
+    result = await service.get_main_summary("u_test", nickname="tester")
+
+    assert result.monthly_spending.current_month_amount == 100000
+    assert result.monthly_spending.previous_month_amount == 200000
+    assert result.monthly_spending.difference_percent_display == "-50.0%"
+    assert result.saved_amount_comparison.current_amount == 1500000
+    assert result.saved_amount_comparison.previous_amount == 0
+    assert result.top_happy_consumption.message == "tester님의 행복 소비는 지속 소비 지출입니다."
+    assert result.saved_amount == 1500000
+    assert result.saved_count == 1
 
 
 @pytest.mark.asyncio

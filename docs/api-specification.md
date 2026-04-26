@@ -1,29 +1,44 @@
-> PRD v3.1 기반 / REST + WebSocket / 작성일: 2026.04
-> 
+# Aftertaste Backend API Specification
+
+> REST + WebSocket API 명세. 모든 REST 엔드포인트의 기본 경로는 `/v1`입니다.
 
 ---
 
-## 0. 공통 사항
+## 0. 공통 규칙
 
 ### Base URL
 
-- REST: `https://{baseurl}/v1`
-- WebSocket: `wss://{baseurl}/v1/ws`
+- Local: `http://localhost:8000/v1`
+- Production 예시: `https://api.aftertaste.app/v1`
+- WebSocket: `/v1/ws/chatbot/{session_id}?token={access_token}`
 
 ### 인증
 
-- 모든 인증 필요 엔드포인트는 헤더에 `Authorization: Bearer {access_token}`
-- 토큰 미발급/만료 시 `401 Unauthorized`
+인증이 필요한 REST API는 HTTP Header에 access token을 전달합니다.
 
-### 공통 응답 형식
+```http
+Authorization: Bearer {access_token}
+```
+
+WebSocket은 쿼리 파라미터로 access token을 전달합니다.
+
+```text
+wss://api.aftertaste.app/v1/ws/chatbot/{session_id}?token={access_token}
+```
+
+### 공통 응답
+
+성공:
 
 ```json
 {
   "success": true,
-  "data": { ... },
+  "data": {},
   "error": null
 }
 ```
+
+실패:
 
 ```json
 {
@@ -31,38 +46,125 @@
   "data": null,
   "error": {
     "code": "INVALID_INPUT",
-    "message": "사용자에게 보여줄 메시지"
+    "message": "요청 형식이 올바르지 않습니다"
   }
 }
 ```
 
-### 카테고리 enum
+### 주요 Enum
 
-- `IMMEDIATE` (즉시 소비형: 배달/카페/술)
-- `LASTING` (지속 소비형: 옷/가전/구독/강의)
-- `ESSENTIAL` (필수 소비형: 교통/통신/공과금)
+`Category`
 
-### 결정 enum
+- `IMMEDIATE`: 즉시 소비. 배달, 카페, 편의점 등
+- `LASTING`: 지속 소비. 강의, 책, 구독, 전자제품 등
+- `ESSENTIAL`: 필수 소비. 교통, 통신, 공과금 등
 
-- `BUY` (살게요)
-- `RECONSIDER` (다시 생각)
-- `SKIP` (안 살게요)
+`ChatbotDecision`
+
+- `BUY`
+- `RECONSIDER`
+- `SKIP`
+
+`OnboardingStatus`
+
+- `NEEDS_BANK_LINK`
+- `NEEDS_LABELING`
+- `READY`
+
+`SubscriptionTier`
+
+- `FREE_FULL`
+- `FREE_LIMITED`
+- `PAID`
 
 ---
 
-## 1. 인증 & 사용자
+## 1. 공통 데이터 구조
 
-### 1.1 회원가입
+### 1.1 금액 비교
 
-**`POST /auth/signup`**
+소비 금액, 아낀 금액 비교에 공통으로 사용합니다.
+
+```json
+{
+  "current_amount": 200000,
+  "previous_amount": 350000,
+  "difference_amount": -150000,
+  "difference_percent": -42.9,
+  "difference_display": "-150000",
+  "difference_percent_display": "-42.9%"
+}
+```
+
+`difference_percent`는 `previous_amount`가 0이면 `null`, 표시값은 `N/A`입니다.
+
+### 1.2 소비 비교
+
+주간 소비 비교처럼 “덜 쓴 금액”을 함께 보여줄 때 사용합니다.
+
+```json
+{
+  "current_amount": 200000,
+  "previous_amount": 350000,
+  "difference_amount": -150000,
+  "difference_percent": -42.9,
+  "difference_display": "-150000",
+  "difference_percent_display": "-42.9%",
+  "saved_amount": 150000
+}
+```
+
+### 1.3 가장 높은 행복 소비
+
+```json
+{
+  "message": "tester님의 행복 소비는 지속 소비 지출입니다.",
+  "category": "LASTING",
+  "category_name": "지속 소비",
+  "avg_score": 5.0,
+  "total_amount": 89000,
+  "count": 1
+}
+```
+
+행복 소비 데이터가 없으면 `category`, `category_name`, `avg_score`는 `null`입니다.
+
+### 1.4 행복 소비 아카이브 항목
+
+```json
+{
+  "transaction_id": "t_xxx",
+  "amount": 89000,
+  "related_total_amount": 178000,
+  "merchant": "유니클로",
+  "category": "LASTING",
+  "occurred_at": "2026-04-20T12:00:00Z",
+  "score": 5,
+  "text": "오래 입을 수 있어서 만족스러웠음"
+}
+```
+
+- `occurred_at`: 지출 날짜
+- `related_total_amount`: 같은 행복 소비 카테고리의 관련 총 지출 금액
+- `text`: 회고/피드백 텍스트
+
+---
+
+## 2. 인증 / 사용자
+
+### 2.1 회원가입
+
+```http
+POST /auth/signup
+```
 
 요청:
 
 ```json
 {
   "email": "user@example.com",
-  "password": "string",
-  "nickname": "string"
+  "password": "password123",
+  "nickname": "tester"
 }
 ```
 
@@ -72,47 +174,44 @@
 {
   "success": true,
   "data": {
-    "user_id": "u_abc123",
+    "user_id": "u_xxx",
     "access_token": "jwt...",
     "refresh_token": "jwt...",
     "onboarding_status": "NEEDS_BANK_LINK"
-  }
+  },
+  "error": null
 }
 ```
 
-`onboarding_status` enum:
+### 2.2 로그인
 
-- `NEEDS_BANK_LINK` (오픈뱅킹 연동 필요)
-- `NEEDS_LABELING` (3개월 라벨링 필요)
-- `READY` (챗봇 활성화)
-
----
-
-### 1.2 로그인
-
-**`POST /auth/login`**
+```http
+POST /auth/login
+```
 
 요청:
 
 ```json
 {
   "email": "user@example.com",
-  "password": "string"
+  "password": "password123"
 }
 ```
 
-응답 `200`: 1.1과 동일
+응답 `200`: 회원가입 응답과 동일합니다.
 
----
+### 2.3 토큰 갱신
 
-### 1.3 토큰 갱신
-
-**`POST /auth/refresh`**
+```http
+POST /auth/refresh
+```
 
 요청:
 
 ```json
-{ "refresh_token": "jwt..." }
+{
+  "refresh_token": "jwt..."
+}
 ```
 
 응답 `200`:
@@ -123,15 +222,16 @@
   "data": {
     "access_token": "jwt...",
     "refresh_token": "jwt..."
-  }
+  },
+  "error": null
 }
 ```
 
----
+### 2.4 내 정보 조회
 
-### 1.4 내 정보 조회
-
-**`GET /users/me`** 🔐
+```http
+GET /users/me
+```
 
 응답 `200`:
 
@@ -139,35 +239,34 @@
 {
   "success": true,
   "data": {
-    "user_id": "u_abc123",
+    "user_id": "u_xxx",
     "email": "user@example.com",
-    "nickname": "string",
+    "nickname": "tester",
     "onboarding_status": "READY",
     "subscription_tier": "FREE_FULL",
     "chatbot_usage_count": 3,
     "created_at": "2026-04-26T10:00:00Z"
-  }
+  },
+  "error": null
 }
 ```
 
-`subscription_tier` enum:
-
-- `FREE_FULL` (첫 5회 풀기능)
-- `FREE_LIMITED` (다운그레이드 상태)
-- `PAID` (유료)
-
 ---
 
-## 2. 오픈뱅킹 연동
+## 3. 오픈뱅킹 연동
 
-### 2.1 OAuth 시작
+### 3.1 OAuth 시작
 
-**`POST /banking/oauth/start`** 🔐
+```http
+POST /banking/oauth/start
+```
 
 요청:
 
 ```json
-{ "provider": "OPEN_BANKING_KR" }
+{
+  "provider": "OPEN_BANKING_KR"
+}
 ```
 
 응답 `200`:
@@ -177,48 +276,34 @@
   "success": true,
   "data": {
     "auth_url": "https://...",
-    "state_token": "string"
-  }
+    "state_token": "state_xxx"
+  },
+  "error": null
 }
 ```
 
----
+### 3.2 OAuth 콜백
 
-### 2.2 OAuth 콜백 처리
-
-**`POST /banking/oauth/callback`** 🔐
+```http
+POST /banking/oauth/callback
+```
 
 요청:
 
 ```json
 {
-  "code": "string",
-  "state_token": "string"
+  "code": "authorization-code",
+  "state_token": "state_xxx"
 }
 ```
 
-응답 `200`:
+### 3.3 거래 동기화
 
-```json
-{
-  "success": true,
-  "data": {
-    "linked_accounts": [
-      {
-        "account_id": "a_xxx",
-        "bank_name": "신한은행",
-        "masked_number": "****-1234"
-      }
-    ]
-  }
-}
+```http
+POST /banking/sync
 ```
 
----
-
-### 2.3 거래 동기화
-
-**`POST /banking/sync`** 🔐
+신규 가입자는 오픈뱅킹 동기화 후 최근 3개월 거래를 기반으로 온보딩을 진행합니다.
 
 요청:
 
@@ -238,28 +323,90 @@
     "synced_count": 247,
     "new_count": 12,
     "sync_id": "s_xxx"
-  }
+  },
+  "error": null
 }
 ```
 
 ---
 
-## 3. 거래 (Transactions)
+## 4. 메인 페이지
 
-### 3.1 거래 목록 조회
+### 4.1 메인 요약
 
-**`GET /transactions`** 🔐
+```http
+GET /insights/main
+```
 
-쿼리 파라미터:
+반환 정보:
 
-- `from_date` (YYYY-MM-DD)
-- `to_date` (YYYY-MM-DD)
-- `category` (IMMEDIATE | LASTING | ESSENTIAL, optional)
-- `cursor` (페이지네이션)
-- `limit` (default 20, max 100)
+- 이번달 소비 금액
+- 지난달 소비 금액
+- 지난달 대비 소비 증감액과 `+/- %`
+- 이번달 아낀 금액
+- 지난달 아낀 금액
+- 지난달 대비 아낀 금액 증감액과 `+/- %`
+- 가장 높은 행복 소비 문장
 
-`from_date`, `to_date`를 생략하면 기본적으로 최근 3개월 거래를 조회합니다.
-`spending_comparison.difference_amount`는 이번 달 사용액 - 전달 사용액이며, 양수는 전달 대비 증가, 음수는 감소를 의미합니다.
+응답 `200`:
+
+```json
+{
+  "success": true,
+  "data": {
+    "monthly_spending": {
+      "current_month_amount": 100000,
+      "previous_month_amount": 200000,
+      "difference_amount": -100000,
+      "difference_percent": -50.0,
+      "difference_display": "-100000",
+      "difference_percent_display": "-50.0%"
+    },
+    "saved_amount_comparison": {
+      "current_amount": 1500000,
+      "previous_amount": 500000,
+      "difference_amount": 1000000,
+      "difference_percent": 200.0,
+      "difference_display": "+1000000",
+      "difference_percent_display": "+200.0%"
+    },
+    "top_happy_consumption": {
+      "message": "tester님의 행복 소비는 지속 소비 지출입니다.",
+      "category": "LASTING",
+      "category_name": "지속 소비",
+      "avg_score": 5.0,
+      "total_amount": 89000,
+      "count": 1
+    },
+    "saved_amount": 1500000,
+    "saved_count": 1
+  },
+  "error": null
+}
+```
+
+---
+
+## 5. 거래
+
+### 5.1 거래 목록 조회
+
+```http
+GET /transactions
+```
+
+쿼리:
+
+- `from_date`: `YYYY-MM-DD`, optional
+- `to_date`: `YYYY-MM-DD`, optional
+- `category`: `IMMEDIATE | LASTING | ESSENTIAL`, optional
+- `cursor`: optional
+- `limit`: default `20`, max `100`
+
+기본 동작:
+
+- 날짜를 생략하면 최근 3개월 거래를 조회합니다.
+- 응답의 `spending_comparison`은 이번달과 지난달 소비 비교입니다.
 
 응답 `200`:
 
@@ -270,8 +417,8 @@
     "transactions": [
       {
         "transaction_id": "t_xxx",
-        "amount": 35000,
-        "merchant": "스타벅스 강남점",
+        "amount": 6500,
+        "merchant": "스타벅스",
         "category": "IMMEDIATE",
         "category_confidence": 0.92,
         "occurred_at": "2026-04-25T19:30:00Z",
@@ -280,102 +427,80 @@
         "labeled_at": null
       }
     ],
-    "next_cursor": "c_xxx",
+    "next_cursor": "t_next",
     "spending_comparison": {
       "current_month_amount": 420000,
       "previous_month_amount": 380000,
       "difference_amount": 40000,
-      "difference_display": "+40000"
+      "difference_percent": 10.5,
+      "difference_display": "+40000",
+      "difference_percent_display": "+10.5%"
     }
-  }
+  },
+  "error": null
 }
 ```
 
----
+### 5.2 거래 상세 조회
 
-### 3.2 거래 상세 조회
-
-**`GET /transactions/{transaction_id}`** 🔐
-
-응답 `200`:
-
-```json
-{
-  "success": true,
-  "data": {
-    "transaction_id": "t_xxx",
-    "amount": 35000,
-    "merchant": "스타벅스 강남점",
-    "merchant_mcc": "5814",
-    "category": "IMMEDIATE",
-    "category_confidence": 0.92,
-    "occurred_at": "2026-04-25T19:30:00Z",
-    "satisfaction_score": 4,
-    "satisfaction_text": "분위기 좋아서 만족",
-    "labeled_at": "2026-04-26T20:00:00Z",
-    "linked_chatbot_session_id": null
-  }
-}
+```http
+GET /transactions/{transaction_id}
 ```
 
----
+### 5.3 거래 카테고리 수정
 
-### 3.3 거래 카테고리 수동 변경
-
-**`PATCH /transactions/{transaction_id}/category`** 🔐
+```http
+PATCH /transactions/{transaction_id}/category
+```
 
 요청:
 
 ```json
-{ "category": "LASTING" }
+{
+  "category": "LASTING"
+}
 ```
 
-응답 `200`: 거래 상세 (3.2와 동일 구조)
+### 5.4 거래 만족도 직접 입력
 
----
-
-### 3.4 거래 만족도 점수 입력 (회고/온보딩 공용)
-
-**`POST /transactions/{transaction_id}/satisfaction`** 🔐
+```http
+POST /transactions/{transaction_id}/satisfaction
+```
 
 요청:
 
 ```json
 {
   "score": 4,
-  "text": "오랜만에 만난 친구라 행복했음"
+  "text": "다시 봐도 만족스러웠음"
 }
 ```
 
-`score`: 1-5 정수 (필수), `text`: optional
-
-응답 `200`:
-
-```json
-{
-  "success": true,
-  "data": {
-    "transaction_id": "t_xxx",
-    "score": 4,
-    "text": "...",
-    "labeled_at": "2026-04-26T20:00:00Z"
-  }
-}
-```
+`score`는 필수, `text`는 선택입니다.
 
 ---
 
-## 4. 온보딩 (3개월 회고 라벨링)
+## 6. 신규 가입 온보딩
 
-### 4.1 온보딩용 거래 큐레이션
+신규 가입자는 로그인 후 오픈뱅킹으로 거래를 동기화한 뒤 최근 3개월 지출 데이터를 기반으로 온보딩 피드백을 작성합니다.
 
-**`GET /onboarding/transactions-to-label`** 🔐
+요구사항:
 
-PRD §8 Step 2: "결제 패턴 바탕 질문(지속적 구매, 큰 지출 등)"
+- AI가 최근 3개월 지출 내용을 분석해 질문을 생성합니다.
+- 질문은 5~10개 범위입니다. 거래 데이터가 부족하면 가능한 질문만 반환될 수 있습니다.
+- 각 질문은 1~5점 필수, 텍스트 선택입니다.
+- 답변 제출 후 행복 소비 아카이브를 생성합니다.
+- 저장된 만족도 정보는 구매 전 상담 챗봇 컨텍스트에 반영됩니다.
 
-쿼리 파라미터:
+### 6.1 온보딩 질문 조회
 
-- `limit` (default 10, max 30)
+```http
+GET /onboarding/questions
+```
+
+쿼리:
+
+- `limit`: default `10`, min `5`, max `10`
 
 응답 `200`:
 
@@ -385,100 +510,129 @@ PRD §8 Step 2: "결제 패턴 바탕 질문(지속적 구매, 큰 지출 등)"
   "data": {
     "labeled_count": 0,
     "required_count": 5,
-    "transactions": [
+    "question_count": 5,
+    "min_question_count": 5,
+    "max_question_count": 10,
+    "questions": [
       {
-        "transaction_id": "t_xxx",
-        "amount": 89000,
-        "merchant": "유니클로",
-        "category": "LASTING",
-        "occurred_at": "2026-03-12T15:00:00Z",
+        "question_id": "oq_t_xxx",
+        "transaction": {
+          "transaction_id": "t_xxx",
+          "amount": 89000,
+          "merchant": "유니클로",
+          "category": "LASTING",
+          "occurred_at": "2026-04-20T12:00:00Z"
+        },
         "selection_reason": "LARGE_AMOUNT",
-        "question": "이 89,000원의 옷, 지금 봐도 만족스러우세요?"
-      },
-      {
-        "transaction_id": "t_yyy",
-        "amount": 4500,
-        "merchant": "배달의민족",
-        "category": "IMMEDIATE",
-        "occurred_at": "2026-03-15T22:30:00Z",
-        "selection_reason": "REPEATED_PURCHASE",
-        "question": "이런 늦은 시간 배달, 다시 보면 만족도가 어떠세요?"
+        "pattern_summary": "기간 내 큰 지출에 해당하는 소비입니다.",
+        "question": {
+          "title": "큰 금액이었던 이 소비는 다시 봐도 만족스러웠나요?",
+          "body": "유니클로에서 쓴 89,000원이 금액만큼의 만족이나 효용을 남겼는지 1~5점으로 평가해 주세요.",
+          "answer_type": "SCORE_WITH_TEXT",
+          "score_scale": {
+            "min": 1,
+            "max": 5,
+            "min_label": "금액 대비 아쉬웠어요",
+            "max_label": "충분히 만족했어요"
+          },
+          "required": true
+        }
       }
     ]
-  }
+  },
+  "error": null
 }
 ```
 
-`selection_reason` enum:
+### 6.2 온보딩 답변 제출
 
-- `LARGE_AMOUNT` (큰 지출)
-- `REPEATED_PURCHASE` (지속적 구매)
-- `UNUSUAL_PATTERN` (평소와 다른 소비)
-- `HIGH_UNCERTAINTY` (AI가 확신 못 함)
-
----
-
-### 4.2 온보딩 진행률 조회
-
-**`GET /onboarding/progress`** 🔐
-
-응답 `200`:
-
-```json
-{
-  "success": true,
-  "data": {
-    "labeled_count": 3,
-    "required_count": 5,
-    "is_chatbot_unlocked": false,
-    "next_step": "LABEL_MORE"
-  }
-}
+```http
+POST /onboarding/feedback
 ```
-
----
-
-### 4.3 첫 인사이트 카드 생성
-
-**`POST /onboarding/first-insight`** 🔐
-
-5개 라벨링 완료 후 호출. PRD §8 Step 3.
-
-응답 `200`:
-
-```json
-{
-  "success": true,
-  "data": {
-    "headline": "당신은 친구와의 식사에 쓸 때 만족도가 높네요",
-    "supporting_data": {
-      "category": "친구 식사",
-      "avg_score": 4.6,
-      "count": 4
-    }
-  }
-}
-```
-
----
-
-## 5. 챗봇 (결제 전 상담) - 핵심 기능
-
-### 5.1 세션 시작
-
-**`POST /chatbot/sessions`** 🔐
 
 요청:
 
 ```json
 {
-  "initial_message": "에어팟 프로 35만원 살까 고민 중",
+  "answers": [
+    {
+      "question_id": "oq_t_xxx",
+      "transaction_id": "t_xxx",
+      "score": 5,
+      "text": "오래 입을 수 있어서 만족스러웠음"
+    }
+  ]
+}
+```
+
+응답 `200`:
+
+```json
+{
+  "success": true,
+  "data": {
+    "labeled_count": 5,
+    "required_count": 5,
+    "is_chatbot_unlocked": true,
+    "chatbot_context_ready": true,
+    "first_insight": {
+      "headline": "당신은 지속 소비에 쓸 때 만족도가 높네요",
+      "supporting_data": {
+        "category": "지속 소비",
+        "avg_score": 4.6,
+        "count": 3
+      }
+    },
+    "top_happy_consumption": {
+      "message": "tester님의 행복 소비는 지속 소비 지출입니다.",
+      "category": "LASTING",
+      "category_name": "지속 소비",
+      "avg_score": 5.0,
+      "total_amount": 89000,
+      "count": 1
+    },
+    "happy_purchase_archive": [
+      {
+        "transaction_id": "t_xxx",
+        "amount": 89000,
+        "related_total_amount": 89000,
+        "merchant": "유니클로",
+        "category": "LASTING",
+        "occurred_at": "2026-04-20T12:00:00Z",
+        "score": 5,
+        "text": "오래 입을 수 있어서 만족스러웠음"
+      }
+    ]
+  },
+  "error": null
+}
+```
+
+호환 엔드포인트:
+
+- `GET /onboarding/transactions-to-label`
+- `GET /onboarding/progress`
+- `POST /onboarding/first-insight`
+
+---
+
+## 7. 구매 전 챗봇 상담
+
+### 7.1 챗봇 세션 시작
+
+```http
+POST /chatbot/sessions
+```
+
+요청:
+
+```json
+{
+  "initial_message": "에어팟 프로를 살지 고민 중이야",
   "amount_hint": 350000,
   "product_hint": "에어팟 프로"
 }
 ```
-
-`amount_hint`, `product_hint`는 optional. AI가 메시지에서 자동 추출 가능.
 
 응답 `201`:
 
@@ -487,186 +641,90 @@ PRD §8 Step 2: "결제 패턴 바탕 질문(지속적 구매, 큰 지출 등)"
   "success": true,
   "data": {
     "session_id": "sess_xxx",
-    "websocket_url": "wss://api.aftertaste.app/v1/ws/chatbot/sess_xxx",
+    "websocket_url": "/v1/ws/chatbot/sess_xxx",
     "started_at": "2026-04-26T10:00:00Z",
     "model_tier": "FULL"
-  }
+  },
+  "error": null
 }
 ```
 
-`model_tier`: `FULL` (풀 모델, FREE_FULL/PAID 사용자) | `LITE` (다운그레이드 모델, FREE_LIMITED 사용자)
+챗봇은 온보딩/주간 회고에서 저장된 만족도 데이터를 기반으로 사용자 컨텍스트를 구성합니다.
 
----
+### 7.2 WebSocket 상담
 
-### 5.2 챗봇 WebSocket 통신
+```text
+WS /ws/chatbot/{session_id}?token={access_token}
+```
 
-**`WS /ws/chatbot/{session_id}`** 🔐 (쿼리: `?token={access_token}`)
-
-### 5.2.1 클라이언트 → 서버
+클라이언트 메시지:
 
 ```json
 {
   "type": "user_message",
-  "content": "출퇴근 때마다 쓰니까 자주 쓸 것 같아"
+  "content": "출퇴근길에 자주 쓸 것 같아"
 }
 ```
+
+서버 토큰 스트리밍:
+
+```json
+{
+  "type": "assistant_token",
+  "content": "최근 "
+}
+```
+
+결정:
 
 ```json
 {
   "type": "decision",
-  "decision": "BUY"
+  "decision": "SKIP"
 }
 ```
 
-### 5.2.2 서버 → 클라이언트
+### 7.3 세션 결정 확정
 
-**메시지 스트리밍 (토큰 단위)**
-
-```json
-{ "type": "assistant_token", "content": "지난" }
-{ "type": "assistant_token", "content": " 패턴을" }
-{ "type": "assistant_token", "content": " 보시면..." }
+```http
+POST /chatbot/sessions/{session_id}/decide
 ```
-
-**메시지 완료**
-
-```json
-{
-  "type": "assistant_message_done",
-  "message_id": "msg_xxx",
-  "full_content": "지난 패턴을 보시면...",
-  "data_references": [
-    { "type": "category_stat", "category": "여행", "avg_score": 4.8 },
-    { "type": "transaction", "transaction_id": "t_xxx" }
-  ]
-}
-```
-
-**상담 종료 (사용자가 결정 버튼 클릭 후)**
-
-```json
-{
-  "type": "session_closed",
-  "session_id": "sess_xxx",
-  "decision": "BUY",
-  "summary": {
-    "product": "에어팟 프로",
-    "amount": 350000,
-    "user_reasoning": "자주 사용 예정",
-    "ai_data_shown": "만족도 상위 카테고리 비교 + 가전 카테고리 과거 이력",
-    "decision": "BUY"
-  }
-}
-```
-
-**에러**
-
-```json
-{
-  "type": "error",
-  "code": "RATE_LIMIT_EXCEEDED",
-  "message": "잠시 후 다시 시도해주세요"
-}
-```
-
----
-
-### 5.3 세션 종료 (REST 백업, 결정 확정)
-
-**`POST /chatbot/sessions/{session_id}/decide`** 🔐
-
-WebSocket 사용 권장이지만 REST 폴백용.
 
 요청:
 
 ```json
-{ "decision": "BUY" }
-```
-
-응답 `200`:
-
-```json
 {
-  "success": true,
-  "data": {
-    "session_id": "sess_xxx",
-    "decision": "BUY",
-    "summary": { ... },
-    "linked_transaction_id": null
-  }
+  "decision": "BUY"
 }
 ```
 
-`linked_transaction_id`: 1주일 이내 비슷한 가맹점/금액 결제 시 자동 연결
+### 7.4 세션 목록 / 상세
 
----
-
-### 5.4 챗봇 세션 목록
-
-**`GET /chatbot/sessions`** 🔐
-
-쿼리: `from_date`, `to_date`, `decision` (필터), `cursor`, `limit`
-
-응답 `200`:
-
-```json
-{
-  "success": true,
-  "data": {
-    "sessions": [
-      {
-        "session_id": "sess_xxx",
-        "started_at": "2026-04-26T10:00:00Z",
-        "ended_at": "2026-04-26T10:04:00Z",
-        "summary": {
-          "product": "에어팟 프로",
-          "amount": 350000,
-          "decision": "BUY"
-        },
-        "linked_transaction_id": "t_xxx"
-      }
-    ],
-    "next_cursor": "c_xxx"
-  }
-}
+```http
+GET /chatbot/sessions
+GET /chatbot/sessions/{session_id}
 ```
 
 ---
 
-### 5.5 챗봇 세션 상세
+## 8. 주간 피드백
 
-**`GET /chatbot/sessions/{session_id}`** 🔐
+주간 피드백은 최근 3개월 만족도 데이터와 이번 주 지출을 함께 보고 질문을 생성합니다.
 
-응답 `200`:
+요구사항:
 
-```json
-{
-  "success": true,
-  "data": {
-    "session_id": "sess_xxx",
-    "started_at": "...",
-    "ended_at": "...",
-    "messages": [
-    { "role": "system", "content": "...(??? ????)" },
-      { "role": "user", "content": "...", "created_at": "..." },
-      { "role": "assistant", "content": "...", "created_at": "..." }
-    ],
-    "summary": { ... },
-    "decision": "BUY",
-    "linked_transaction_id": "t_xxx"
-  }
-}
+- 일주일간 데이터를 바탕으로 질문을 생성합니다.
+- 최근 3개월 데이터와 비교해 질문 컨텍스트를 보강합니다.
+- 질문은 5~10개 범위입니다. 거래 데이터가 부족하면 가능한 질문만 반환될 수 있습니다.
+- 각 질문은 1~5점 필수, 텍스트 선택입니다.
+- 답변 제출 후 주간 인사이트(만족도 평균, 하이라이트)를 반환합니다.
+- 주간 요약(소비 비교, 아낀 금액, 행복 소비 아카이브)은 별도 조회 API로 확인합니다.
+
+### 8.1 이번 주 피드백 질문 조회
+
+```http
+GET /retrospectives/current-week
 ```
-
----
-
-## 6. 주간 회고
-
-### 6.1 이번 주 회고 큐레이션 조회
-
-**`GET /retrospectives/current-week`** 🔐
-
-일요일에 호출하면 그 주 회고 대상 리스트 반환. PRD §3.2.
 
 응답 `200`:
 
@@ -677,58 +735,59 @@ WebSocket 사용 권장이지만 REST 폴백용.
     "week_start": "2026-04-20",
     "week_end": "2026-04-26",
     "is_completed": false,
-    "transactions": [
+    "question_count": 5,
+    "min_question_count": 5,
+    "max_question_count": 10,
+    "questions": [
       {
-        "transaction_id": "t_xxx",
-        "amount": 35000,
-        "merchant": "스타벅스",
-        "category": "IMMEDIATE",
-        "occurred_at": "2026-04-25T19:30:00Z",
-        "selection_reason": "HIGH_SATISFACTION_REINFORCE",
+        "question_id": "rq_t_xxx",
+        "transaction": {
+          "transaction_id": "t_xxx",
+          "amount": 35000,
+          "merchant": "스타벅스",
+          "category": "IMMEDIATE",
+          "occurred_at": "2026-04-25T19:30:00Z"
+        },
+        "selection_reason": "DIVERSITY",
+        "pattern_summary": "이번 기간 소비 패턴을 대표하는 항목입니다.",
+        "question": {
+          "title": "이번 소비는 한 주를 돌아봤을 때 만족스러웠나요?",
+          "body": "스타벅스에서 쓴 35,000원이 나에게 남긴 만족도를 기록해 주세요.",
+          "answer_type": "SCORE_WITH_TEXT",
+          "score_scale": {
+            "min": 1,
+            "max": 5,
+            "min_label": "아쉬웠어요",
+            "max_label": "만족스러웠어요"
+          },
+          "required": true
+        },
         "linked_chatbot_summary": null
-      },
-      {
-        "transaction_id": "t_yyy",
-        "amount": 350000,
-        "merchant": "쿠팡",
-        "category": "LASTING",
-        "occurred_at": "2026-04-22T14:00:00Z",
-        "selection_reason": "CHATBOT_FOLLOW_UP",
-        "linked_chatbot_summary": {
-          "session_id": "sess_xxx",
-          "user_reasoning": "출퇴근 때마다 쓰니까 자주 쓸 것 같아",
-          "decision": "BUY"
-        }
       }
     ]
-  }
+  },
+  "error": null
 }
 ```
 
-`selection_reason` enum:
+### 8.2 주간 피드백 답변 제출
 
-- `HIGH_SATISFACTION_REINFORCE` (만족 강화)
-- `LARGE_AMOUNT_GAP` (공백 메우기)
-- `HIGH_UNCERTAINTY` (Active Learning)
-- `DIVERSITY` (카테고리 다양성)
-- `CHATBOT_FOLLOW_UP` (챗봇 상담 후속)
-
----
-
-### 6.2 회고 일괄 제출
-
-**`POST /retrospectives`** 🔐
-
-여러 거래의 점수를 한 번에 제출.
+```http
+POST /retrospectives
+```
 
 요청:
 
 ```json
 {
   "week_start": "2026-04-20",
-  "entries": [
-    { "transaction_id": "t_xxx", "score": 4, "text": null },
-    { "transaction_id": "t_yyy", "score": 3, "text": "생각보다 안 씀" }
+  "answers": [
+    {
+      "question_id": "rq_t_xxx",
+      "transaction_id": "t_xxx",
+      "score": 4,
+      "text": "커피값은 컸지만 친구와 오래 이야기해서 만족스러웠어요."
+    }
   ]
 }
 ```
@@ -742,22 +801,23 @@ WebSocket 사용 권장이지만 REST 폴백용.
     "retrospective_id": "r_xxx",
     "week_start": "2026-04-20",
     "completed_at": "2026-04-26T20:00:00Z",
-    "submitted_count": 2,
+    "submitted_count": 5,
     "weekly_insight": {
-      "headline": "이번 주 만족도 평균 3.7점, 지난주보다 +0.3",
-      "highlight": "친구 식사 카테고리에서 가장 높은 만족"
+      "headline": "이번 주 만족도 평균 4.0점, 지난주보다 +0.3",
+      "highlight": "지속 소비 카테고리에서 가장 높은 만족"
     }
-  }
+  },
+  "error": null
 }
 ```
 
----
+### 8.3 주간 요약 조회
 
-### 6.3 과거 회고 이력
+회고 제출 후 주간 소비 요약을 별도로 조회합니다.
 
-**`GET /retrospectives`** 🔐
-
-쿼리: `from_week`, `to_week`, `cursor`, `limit`
+```http
+GET /retrospectives/{retrospective_id}/weekly-summary
+```
 
 응답 `200`:
 
@@ -765,32 +825,78 @@ WebSocket 사용 권장이지만 REST 폴백용.
 {
   "success": true,
   "data": {
-    "retrospectives": [
+    "retrospective_id": "r_xxx",
+    "week_start": "2026-04-20",
+    "week_end": "2026-04-26",
+    "spending_comparison": {
+      "current_amount": 200000,
+      "previous_amount": 350000,
+      "difference_amount": -150000,
+      "difference_percent": -42.9,
+      "difference_display": "-150000",
+      "difference_percent_display": "-42.9%",
+      "saved_amount": 150000
+    },
+    "saved_amount_comparison": {
+      "current_amount": 350000,
+      "previous_amount": 0,
+      "difference_amount": 350000,
+      "difference_percent": null,
+      "difference_display": "+350000",
+      "difference_percent_display": "N/A"
+    },
+    "top_happy_consumption": {
+      "message": "tester님의 행복 소비는 지속 소비 지출입니다.",
+      "category": "LASTING",
+      "category_name": "지속 소비",
+      "avg_score": 4.0,
+      "total_amount": 200000,
+      "count": 1
+    },
+    "happy_purchase_archive": [
       {
-        "retrospective_id": "r_xxx",
-        "week_start": "2026-04-20",
-        "week_end": "2026-04-26",
-        "completed_at": "...",
-        "avg_score": 3.7,
-        "entry_count": 6
+        "transaction_id": "t_xxx",
+        "amount": 35000,
+        "related_total_amount": 35000,
+        "merchant": "스타벅스",
+        "category": "IMMEDIATE",
+        "occurred_at": "2026-04-25T19:30:00Z",
+        "score": 4,
+        "text": "친구와 오래 이야기해서 만족스러웠어요."
       }
-    ],
-    "next_cursor": "c_xxx"
-  }
+    ]
+  },
+  "error": null
 }
 ```
 
+### 8.4 과거 회고 목록
+
+```http
+GET /retrospectives
+```
+
+쿼리:
+
+- `from_week`: `YYYY-MM-DD`, optional
+- `to_week`: `YYYY-MM-DD`, optional
+- `cursor`: optional
+- `limit`: default `20`, max `100`
+
 ---
 
-## 7. 인사이트 (메인 화면 위젯)
+## 9. 행복 소비 / 인사이트
 
-### 7.1 행복 소비 아카이브
+### 9.1 행복 소비 아카이브 조회
 
-**`GET /insights/happy-purchases`** 🔐
+```http
+GET /insights/happy-purchases
+```
 
-PRD §5.1 — "내가 잘 쓴 돈 카드"
+쿼리:
 
-쿼리: `limit` (default 20), `cursor`
+- `limit`: default `20`, max `100`
+- `cursor`: optional
 
 응답 `200`:
 
@@ -801,30 +907,32 @@ PRD §5.1 — "내가 잘 쓴 돈 카드"
     "items": [
       {
         "transaction_id": "t_xxx",
-        "amount": 80000,
-        "merchant": "OO 식당",
+        "amount": 35000,
+        "related_total_amount": 80000,
+        "merchant": "스타벅스",
         "category": "IMMEDIATE",
-        "occurred_at": "2026-04-15T19:00:00Z",
+        "occurred_at": "2026-04-25T19:30:00Z",
         "score": 5,
-        "text": "오랜만에 만난 친구"
+        "text": "친구와 오래 이야기해서 만족스러웠어요."
       }
     ],
     "total_count": 47,
     "total_amount": 1820000,
-    "next_cursor": "c_xxx"
-  }
+    "next_cursor": null
+  },
+  "error": null
 }
 ```
 
----
+### 9.2 안 쓴 돈 카운터
 
-### 7.2 안 쓴 돈 카운터
+```http
+GET /insights/saved-amount
+```
 
-**`GET /insights/saved-amount`** 🔐
+쿼리:
 
-PRD §5.2 — 챗봇에서 SKIP 결정한 누적 금액.
-
-쿼리: `period` (`all` | `month` | `year`)
+- `period`: `all | month | year`
 
 응답 `200`:
 
@@ -832,327 +940,128 @@ PRD §5.2 — 챗봇에서 SKIP 결정한 누적 금액.
 {
   "success": true,
   "data": {
-    "total_saved": 1240000,
-    "skip_count": 8,
-    "reconsider_count": 5,
+    "total_saved": 1500000,
+    "skip_count": 1,
+    "reconsider_count": 0,
     "recent_skips": [
       {
         "session_id": "sess_xxx",
-        "product": "맥북 에어",
+        "product": "맥북",
         "amount": 1500000,
         "decided_at": "2026-04-10T15:00:00Z"
       }
     ]
-  }
+  },
+  "error": null
 }
 ```
 
----
+### 9.3 카테고리별 만족도
 
-### 7.3 카테고리별 만족도
-
-**`GET /insights/category-satisfaction`** 🔐
-
-쿼리: `period` (`30d` | `90d` | `all`)
-
-응답 `200`:
-
-```json
-{
-  "success": true,
-  "data": {
-    "categories": [
-      {
-        "name": "여행",
-        "avg_score": 4.8,
-        "count": 3,
-        "total_amount": 900000
-      },
-      {
-        "name": "친구 식사",
-        "avg_score": 4.5,
-        "count": 12,
-        "total_amount": 480000
-      }
-    ]
-  }
-}
+```http
+GET /insights/category-satisfaction
 ```
 
----
+쿼리:
 
-### 7.4 만족도 추세
+- `period`: `30d | 90d | all`
 
-**`GET /insights/score-trend`** 🔐
+### 9.4 만족도 추세
 
-쿼리: `period` (`8w` | `12w` | `6m`)
-
-응답 `200`:
-
-```json
-{
-  "success": true,
-  "data": {
-    "data_points": [
-      { "week_start": "2026-03-02", "avg_score": 3.4 },
-      { "week_start": "2026-03-09", "avg_score": 3.6 },
-      { "week_start": "2026-04-20", "avg_score": 3.7 }
-    ]
-  }
-}
+```http
+GET /insights/score-trend
 ```
 
+쿼리:
+
+- `period`: `8w | 12w | 6m`
+
 ---
 
-## 8. 결제 (Subscription)
+## 10. 구독
 
-### 8.1 구독 상태 조회
+### 10.1 구독 상태 조회
 
-**`GET /subscription`** 🔐
-
-응답 `200`:
-
-```json
-{
-  "success": true,
-  "data": {
-    "tier": "FREE_FULL",
-    "chatbot_usage_count": 3,
-    "chatbot_full_remaining": 2,
-    "downgrades_at": null,
-    "next_billing_date": null
-  }
-}
+```http
+GET /subscription
 ```
 
----
+### 10.2 유료 전환
 
-### 8.2 유료 전환
-
-**`POST /subscription/upgrade`** 🔐
+```http
+POST /subscription/upgrade
+```
 
 요청:
 
 ```json
-{ "plan": "MONTHLY", "payment_method_token": "..." }
-```
-
-응답 `200`: 구독 상태
-
----
-
-## 9. AI 내부 LLM 호출 명세
-
-> 이 섹션은 외부 노출 API가 아니라, 백엔드 → OpenAI API 호출 명세.
-> 
-
-### 9.1 사용 모델
-
-- **챗봇 풀 모드**: `gpt-4o` (FULL)
-- **챗봇 라이트 모드**: `gpt-4o-mini` (LITE, 다운그레이드)
-- **요약/분류 백그라운드**: `gpt-4o-mini`
-- **인사이트 카피 생성**: `gpt-4o-mini`
-
----
-
-### 9.2 챗봇 상담 호출
-
-**엔드포인트 (OpenAI)**: `POST https://api.openai.com/v1/chat/completions`
-
-**시스템 프롬프트 (구조)**:
-
-```
-당신은 Aftertaste의 담담한 상담사입니다.
-- 공감형 친구처럼 호들갑 떨지 않습니다.
-- "지금 기분이 어떠세요?" 같은 심리상담 질문은 하지 않습니다.
-- 데이터 기반으로 사용자의 패턴을 보여줍니다.
-- 결정은 사용자가 합니다. 강요하지 않습니다.
-
-[사용자 컨텍스트]
-- 이번 달 평균 만족도: {avg_score}
-- 카테고리별 만족도 상위 3개: {top_categories}
-- 비슷한 금액대 과거 결정: {similar_amount_history}
-- 같은 카테고리 과거 만족도: {category_history}
-
-[현재 상담]
-- 입력 상품: {product_hint}
-- 입력 금액: {amount_hint}
-- 추정 카테고리: {category}, 신뢰도 {confidence}
-```
-
-**요청 예시**:
-
-```json
 {
-  "model": "gpt-4o",
-  "max_tokens": 500,
-  "stream": true,
-  "messages": [
-    { "role": "system", "content": "...(??? ????)" },
-    { "role": "user", "content": "에어팟 프로 35만원 살까 고민 중" },
-    { "role": "assistant", "content": "35만원이군요. 지난 한 달간..." },
-    { "role": "user", "content": "출퇴근 때마다 쓰니까 자주 쓸 것 같아" }
-  ]
+  "plan": "MONTHLY",
+  "payment_method_token": "payment-token"
 }
 ```
 
-**스트리밍 응답 처리**:
+---
 
-- `chat.completion.chunk` 이벤트의 `text` → 클라이언트 WebSocket에 `assistant_token`으로 전달
-- `[DONE]` → `assistant_message_done` 전송 후 DB 저장
+## 11. AI 내부 호출
+
+### 11.1 거래 카테고리 분류
+
+오픈뱅킹 동기화 후 룰 기반 분류 신뢰도 `< 0.7`일 때 OpenAI 분류를 호출합니다.
+
+### 11.2 온보딩 질문 생성
+
+`GET /onboarding/questions`에서 최근 3개월 미라벨 거래를 후보로 전달합니다.
+
+### 11.3 주간 피드백 질문 생성
+
+`GET /retrospectives/current-week`에서 이번 주 거래와 최근 3개월 라벨 데이터를 함께 전달합니다.
+
+### 11.4 챗봇 응답 생성
+
+챗봇은 라벨링된 거래의 카테고리별 만족도 평균을 사용자 컨텍스트로 사용합니다.
 
 ---
 
-### 9.3 대화 요약 생성 (세션 종료 시)
+## 12. 호출 흐름
 
-**호출 시점**: 사용자가 결정 버튼 클릭 → 세션 종료 → 비동기 작업 큐로
+### 12.1 신규 가입자
 
-**시스템 프롬프트**:
-
-```
-다음 챗봇 상담 대화를 4개 필드로 요약해주세요.
-JSON만 출력하고, 설명/마크다운 금지.
-
-필드:
-- product: 상담한 상품/소비 항목
-- amount: 금액 (숫자, 모르면 null)
-- user_reasoning: 사용자가 사려는 이유 (한 줄)
-- ai_data_shown: AI가 제시한 핵심 데이터 (한 줄)
-- decision: BUY | RECONSIDER | SKIP
+```text
+1. POST /auth/signup
+2. POST /banking/oauth/start
+3. POST /banking/oauth/callback
+4. POST /banking/sync
+5. GET /onboarding/questions
+6. POST /onboarding/feedback
+7. GET /insights/main
+8. POST /chatbot/sessions
 ```
 
-**요청**:
+### 12.2 기존 사용자 메인/주간 피드백
 
-```json
-{
-  "model": "gpt-4o-mini",
-  "max_tokens": 300,
-  "messages": [
-    { "role": "system", "content": "...(??? ????)" },
-    { "role": "user", "content": "[전체 대화 + 결정]" }
-  ]
-}
+```text
+1. GET /insights/main
+2. GET /retrospectives/current-week
+3. POST /retrospectives
+4. GET /retrospectives/{retrospective_id}/weekly-summary
+5. GET /insights/happy-purchases
+6. GET /insights/saved-amount
 ```
-
-**응답 파싱**: JSON.parse(response.content[0].text) → DB 저장
 
 ---
 
-### 9.4 거래 카테고리 분류
+## 13. 에러 코드
 
-**호출 시점**: 오픈뱅킹 동기화 후 룰베이스 분류 신뢰도 < 0.7인 경우만
-
-**시스템 프롬프트**:
-
-```
-거래 정보를 보고 IMMEDIATE/LASTING/ESSENTIAL 중 하나로 분류하세요.
-- IMMEDIATE: 즉시 소비형 (배달/카페/술/충동쇼핑)
-- LASTING: 지속 소비형 (옷/가전/구독/강의)
-- ESSENTIAL: 필수 소비형 (교통/통신/공과금)
-
-JSON만 출력. {"category": "...", "confidence": 0.0~1.0}
-```
-
-**모델**: `gpt-4o-mini`
-
----
-
-### 9.5 회고 큐레이션 (Active Learning)
-
-**호출 시점**: 일요일 오전, 회고 대상 선정 시.
-
-**프롬프트**:
-
-```
-지난 주 거래 N개 중에서, 회고에 올릴 거래를 선정하세요.
-선정 기준 4가지를 골고루 믹스:
-1. 만족 강화 (이미 만족도 높았던 항목)
-2. 공백 메우기 (큰 금액인데 라벨 없음)
-3. AI 불확실 (분류 신뢰도 낮음)
-4. 다양성 (카테고리 골고루)
-
-추가 우선: 이번 주 챗봇 BUY 결정한 거래 → 무조건 포함
-
-JSON 출력:
-{ "selected": [{ "transaction_id": "...", "reason": "..." }] }
-```
-
-**모델**: `gpt-4o-mini`
-
----
-
-### 9.6 인사이트 카피 생성
-
-**호출 시점**: 첫 인사이트 카드, 주간 인사이트 헤드라인 생성 시.
-
-**시스템 프롬프트**:
-
-```
-사용자의 소비 통계를 보고, "Aftertaste 톤"의 카피를 생성하세요.
-- 따뜻하고 고요
-- 죄책감 X, 강요 X
-- 데이터 기반, 한 줄
-
-예시 좋음: "당신은 친구와의 식사에 쓸 때 만족도가 높네요"
-예시 나쁨: "또 충동구매 하셨네요"
-```
-
-**모델**: `gpt-4o-mini`
-
----
-
-## 10. 에러 코드 표
-
-| 코드 | HTTP | 의미 |
+| code | HTTP | 의미 |
 | --- | --- | --- |
 | `INVALID_INPUT` | 400 | 요청 형식 오류 |
-| `UNAUTHORIZED` | 401 | 인증 토큰 없음/만료 |
+| `UNAUTHORIZED` | 401 | 인증 실패 |
 | `FORBIDDEN` | 403 | 권한 없음 |
 | `NOT_FOUND` | 404 | 리소스 없음 |
-| `RATE_LIMIT_EXCEEDED` | 429 | 요청 한도 초과 |
-| `BANK_LINK_REQUIRED` | 409 | 오픈뱅킹 미연동 |
-| `LABELING_REQUIRED` | 409 | 5라벨 미달 (챗봇 활성화 안 됨) |
-| `CHATBOT_QUOTA_EXCEEDED` | 402 | 무료 사용량 초과 |
+| `RATE_LIMIT_EXCEEDED` | 429 | 요청 제한 초과 |
+| `BANK_LINK_REQUIRED` | 409 | 오픈뱅킹 연동 필요 |
+| `LABELING_REQUIRED` | 409 | 라벨링 미완료 |
+| `CHATBOT_QUOTA_EXCEEDED` | 402 | 챗봇 무료 사용량 초과 |
 | `LLM_UNAVAILABLE` | 503 | OpenAI API 일시 장애 |
 | `INTERNAL_ERROR` | 500 | 서버 내부 오류 |
-
----
-
-## 11. 호출 흐름 예시 (전체 사용자 여정)
-
-### 11.1 신규 사용자 첫 상담까지
-
-```
-1. POST /auth/signup
-2. POST /banking/oauth/start → auth_url로 리다이렉트
-3. POST /banking/oauth/callback
-4. POST /banking/sync (3개월치)
-5. GET /onboarding/transactions-to-label
-6. POST /transactions/{id}/satisfaction × 5회
-7. GET /onboarding/progress → is_chatbot_unlocked: true
-8. POST /onboarding/first-insight
-9. POST /chatbot/sessions
-10. WS /ws/chatbot/{session_id}
-11. (대화)
-12. WS: { "type": "decision", "decision": "BUY" }
-13. (서버 비동기) OpenAI로 요약 생성 → DB 저장
-```
-
-### 11.2 일요일 회고
-
-```
-1. GET /retrospectives/current-week
-2. POST /retrospectives (entries 일괄 제출)
-3. (응답에 weekly_insight 포함)
-```
-
----
-
-## 12. Open Questions (구현 시 결정 필요)
-
-1. **WebSocket 인증 방식**: 쿼리 토큰 vs 첫 메시지 인증 vs 쿠키
-2. **챗봇 세션 타임아웃**: 무응답 N분 시 자동 종료 정책
-3. **요약 실패 시 폴백**: LLM 실패 시 빈 요약 or 재시도 정책
-4. **카테고리 분류 신뢰도 임계값**: 룰베이스 → LLM 호출 기준 (현재 0.7 가정)
-5. **다운그레이드 사용자의 WebSocket 우선순위**: 응답 속도 차등 정책
-6. **오프라인/캐싱**: 모바일 앱에서 회고 미리보기 등 오프라인 정책

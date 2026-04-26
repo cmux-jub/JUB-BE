@@ -36,7 +36,9 @@ class FakeTransactionService:
                 current_month_amount=6500,
                 previous_month_amount=4000,
                 difference_amount=2500,
+                difference_percent=62.5,
                 difference_display="+2500",
+                difference_percent_display="+62.5%",
             ),
         )
 

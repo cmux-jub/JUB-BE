@@ -11,6 +11,7 @@ from app.schemas.retrospective import (
     RetrospectiveHistoryResponse,
     SubmitRetrospectiveRequest,
     SubmitRetrospectiveResponse,
+    WeeklySummaryResponse,
 )
 from app.services.retrospective_service import RetrospectiveService
 
@@ -33,6 +34,16 @@ async def submit_retrospective(
     service: Annotated[RetrospectiveService, Depends(get_retrospective_service)],
 ) -> ApiResponse[SubmitRetrospectiveResponse]:
     result = await service.submit_retrospective(current_user, request)
+    return ApiResponse(success=True, data=result)
+
+
+@router.get("/{retrospective_id}/weekly-summary", response_model=ApiResponse[WeeklySummaryResponse])
+async def get_weekly_summary(
+    retrospective_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    service: Annotated[RetrospectiveService, Depends(get_retrospective_service)],
+) -> ApiResponse[WeeklySummaryResponse]:
+    result = await service.get_weekly_summary(current_user, retrospective_id)
     return ApiResponse(success=True, data=result)
 
 

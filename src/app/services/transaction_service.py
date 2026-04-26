@@ -12,6 +12,7 @@ from app.schemas.transaction import (
     TransactionListResponse,
     TransactionSummary,
 )
+from app.services.spending_summary import build_spending_comparison
 
 
 class TransactionService:
@@ -125,11 +126,14 @@ class TransactionService:
             to_date=self.end_of_day(previous_month_end),
         )
         difference_amount = current_month_amount - previous_month_amount
+        comparison = build_spending_comparison(current_month_amount, previous_month_amount)
         return MonthlySpendingComparison(
             current_month_amount=current_month_amount,
             previous_month_amount=previous_month_amount,
             difference_amount=difference_amount,
-            difference_display=f"{difference_amount:+d}" if difference_amount != 0 else "0",
+            difference_percent=comparison.difference_percent,
+            difference_display=comparison.difference_display,
+            difference_percent_display=comparison.difference_percent_display,
         )
 
     @staticmethod

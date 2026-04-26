@@ -18,11 +18,14 @@ from app.schemas.insight import (
     CategorySatisfactionResponse,
     HappyPurchaseItem,
     HappyPurchasesResponse,
+    MainMonthlySpendingResponse,
+    MainPageSummaryResponse,
     RecentSkipItem,
     SavedAmountResponse,
     ScoreTrendPoint,
     ScoreTrendResponse,
 )
+from app.services.spending_summary import build_spending_comparison, build_top_happy_consumption
 
 FREE_FULL_CHATBOT_LIMIT = 5
 CATEGORY_LABELS = {
@@ -45,6 +48,50 @@ class InsightService:
         self.retrospective_repo = retrospective_repo
         self.today = today
 
+    async def get_main_summary(self, user_id: str, nickname: str | None = None) -> MainPageSummaryResponse:
+        today = self.today or datetime.now(UTC).date()
+        current_month_start = today.replace(day=1)
+        previous_month_end = current_month_start - timedelta(days=1)
+        previous_month_start = previous_month_end.replace(day=1)
+        current_month_amount = await self.transaction_repo.sum_amount_between(
+            user_id=user_id,
+            from_date=datetime.combine(current_month_start, datetime.min.time(), tzinfo=UTC),
+            to_date=datetime.combine(today, datetime.max.time(), tzinfo=UTC),
+        )
+        previous_month_amount = await self.transaction_repo.sum_amount_between(
+            user_id=user_id,
+            from_date=datetime.combine(previous_month_start, datetime.min.time(), tzinfo=UTC),
+            to_date=datetime.combine(previous_month_end, datetime.max.time(), tzinfo=UTC),
+        )
+        comparison = build_spending_comparison(current_month_amount, previous_month_amount)
+        current_month_saved_amount = await self.sum_saved_amount_between(
+            user_id=user_id,
+            from_date=datetime.combine(current_month_start, datetime.min.time(), tzinfo=UTC),
+            to_date=datetime.combine(today, datetime.max.time(), tzinfo=UTC),
+        )
+        previous_month_saved_amount = await self.sum_saved_amount_between(
+            user_id=user_id,
+            from_date=datetime.combine(previous_month_start, datetime.min.time(), tzinfo=UTC),
+            to_date=datetime.combine(previous_month_end, datetime.max.time(), tzinfo=UTC),
+        )
+        saved_amount_comparison = build_spending_comparison(current_month_saved_amount, previous_month_saved_amount)
+        saved_amount = await self.get_saved_amount(user_id=user_id, period=SavedAmountPeriod.ALL)
+        labeled_transactions = await self.transaction_repo.list_labeled_since(user_id=user_id)
+        return MainPageSummaryResponse(
+            monthly_spending=MainMonthlySpendingResponse(
+                current_month_amount=current_month_amount,
+                previous_month_amount=previous_month_amount,
+                difference_amount=comparison.difference_amount,
+                difference_percent=comparison.difference_percent,
+                difference_display=comparison.difference_display,
+                difference_percent_display=comparison.difference_percent_display,
+            ),
+            saved_amount_comparison=saved_amount_comparison,
+            top_happy_consumption=build_top_happy_consumption(labeled_transactions, nickname=nickname),
+            saved_amount=saved_amount.total_saved,
+            saved_count=saved_amount.skip_count,
+        )
+
     async def get_happy_purchases(
         self,
         user_id: str,
@@ -66,8 +113,15 @@ class InsightService:
         has_next = len(page_items) > normalized_limit
         items = page_items[:normalized_limit]
 
+        related_total_by_category = self.total_amount_by_category(happy_transactions)
         return HappyPurchasesResponse(
-            items=[self.to_happy_purchase_item(transaction) for transaction in items],
+            items=[
+                self.to_happy_purchase_item(
+                    transaction,
+                    related_total_amount=related_total_by_category[Category(transaction.category)],
+                )
+                for transaction in items
+            ],
             total_count=len(happy_transactions),
             total_amount=sum(transaction.amount for transaction in happy_transactions),
             next_cursor=items[-1].id if has_next and items else None,
@@ -138,17 +192,35 @@ class InsightService:
             ]
         )
 
+    async def sum_saved_amount_between(self, user_id: str, from_date: datetime, to_date: datetime) -> int:
+        sessions = await self.chatbot_repo.list_decided_sessions(
+            user_id=user_id,
+            decisions=[ChatbotDecision.SKIP],
+            from_date=from_date,
+            to_date=to_date,
+            limit=1000,
+        )
+        return sum(self.summary_amount(session) or 0 for session in sessions)
+
     @staticmethod
-    def to_happy_purchase_item(transaction: Transaction) -> HappyPurchaseItem:
+    def to_happy_purchase_item(transaction: Transaction, related_total_amount: int) -> HappyPurchaseItem:
         return HappyPurchaseItem(
             transaction_id=transaction.id,
             amount=transaction.amount,
+            related_total_amount=related_total_amount,
             merchant=transaction.merchant,
             category=Category(transaction.category),
             occurred_at=transaction.occurred_at,
             score=transaction.satisfaction_score or 0,
             text=transaction.satisfaction_text,
         )
+
+    @staticmethod
+    def total_amount_by_category(transactions: list[Transaction]) -> dict[Category, int]:
+        amount_by_category: dict[Category, int] = defaultdict(int)
+        for transaction in transactions:
+            amount_by_category[Category(transaction.category)] += transaction.amount
+        return amount_by_category
 
     @staticmethod
     def to_recent_skip_item(session: ChatbotSession) -> RecentSkipItem:
